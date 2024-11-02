@@ -21,9 +21,10 @@ from dotenv import load_dotenv
 
 if "OPENAI_API_BASE" in os.environ:
     del os.environ["OPENAI_API_BASE"]
-
+load_dotenv()
 # Environment variables
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT")
 S3_KEY = os.getenv("S3_KEY")
 S3_SECRET = os.getenv("S3_SECRET")
 S3_BUCKET = os.getenv("S3_BUCKET")
@@ -61,8 +62,8 @@ def get_response(
     # Initialize Azure embeddings
     embeddings = AzureOpenAIEmbeddings(
         model="text-embedding-ada-002",
-        azure_endpoint=os.getenv("AZURE_ENDPOINT"),
-        api_key=os.getenv("OPENAI_API_KEY"),
+        azure_endpoint=AZURE_ENDPOINT,
+        api_key=OPENAI_API_KEY,
         openai_api_version="2023-07-01-preview",
     )
 
@@ -71,7 +72,7 @@ def get_response(
         local_file=file_name,
         boto3_session=aws_s3,
     )
-    print("downloaded file name is ", file_name)
+    print("file name is ", file_name)
 
     # Load document based on file type
     if file_name.endswith(".pdf"):
@@ -89,10 +90,10 @@ def get_response(
     vectorstore = FAISS.from_documents(all_splits, embeddings)
 
     llm = AzureChatOpenAI(
-        azure_endpoint=os.getenv("AZURE_ENDPOINT"),
-        openai_api_version="2023-03-15-preview",
+        azure_endpoint=AZURE_ENDPOINT,
+        openai_api_version="2023-07-01-preview",
         deployment_name="GPT4",
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_api_key=OPENAI_API_KEY,
         openai_api_type="azure",
         model_name=model,
         temperature=temperature,
@@ -100,7 +101,7 @@ def get_response(
 
     qa_chain = ConversationalRetrievalChain.from_llm(
         llm, retriever=vectorstore.as_retriever(), condense_question_prompt=PromptTemplate.from_template(
-        "Answer the following question based on the document content. Be direct and precise. If the information is not in the document, clearly state that.\n\nQuestion: {question}"
+        "You are a professional document analyzer. Please answer the following question based on the document content. Be direct and precise. If the information is not in the document, clearly state that. Remember, you are Bob, the analyzer, not the user asking the question.\n\nQuestion: {question}"
 
     ))
 
@@ -167,7 +168,6 @@ aws_s3 = boto3.Session(
     region_name=S3_REGION,
 )
 
-
 @app.post("/chat")
 async def create_chat_message(chats: ChatMessageSent):
     try:
@@ -232,27 +232,30 @@ async def create_chat_message(chats: ChatMessageSent):
 
 
 @app.post("/uploadFile")
-async def uploadtos3(data_file: UploadFile):
-    print(data_file.filename.split("/")[-1])
+async def upload_to_s3(data_file: UploadFile):
+    # Extract the filename
+    filename = data_file.filename.split("/")[-1]
+    
     try:
-        with open(f"{data_file.filename}", "wb") as out_file:
-            content = await data_file.read()
-            out_file.write(content)
-        wr.s3.upload(
-            local_file=data_file.filename,
-            path=f"s3://{S3_BUCKET}/{S3_PATH}{data_file.filename.split('/')[-1]}",
-            boto3_session=aws_s3,
+        # Read the content of the uploaded file
+        file_content = await data_file.read()
+
+        # Upload the file directly to S3
+        aws_s3.client('s3').put_object(
+            Bucket=S3_BUCKET,
+            Key=f"{S3_PATH}{filename}",
+            Body=file_content,
+            ContentType=data_file.content_type,  # Set the content type if needed
         )
-        os.remove(data_file.filename)
-        response = {
-            "filename": data_file.filename.split("/")[-1],
-            "file_path": f"s3://{S3_BUCKET}/{S3_PATH}{data_file.filename.split('/')[-1]}",
-        }
+        
+        # Construct response
+        s3_file_path = f"s3://{S3_BUCKET}/{S3_PATH}{filename}"
+        return JSONResponse(content={"filename": filename, "file_path": s3_file_path})
 
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    return JSONResponse(content=response)
+    except Exception as e:
+        # Capture any exceptions and return an error response
+        print(f"Error uploading file: {str(e)}")
+        raise HTTPException(status_code=500, detail="An error occurred while uploading the file.")
 
 
 import uvicorn
