@@ -1,4 +1,6 @@
 from pydantic import BaseModel
+from langchain.prompts import PromptTemplate
+
 import pymongo
 import traceback
 import os, sys
@@ -29,7 +31,6 @@ S3_REGION = "ap-southeast-2"
 S3_PATH = "coverletter/"
 
 MONGO_URL = "mongodb+srv://owenwijaya22:connect@byteandgo.mpyeghk.mongodb.net/?retryWrites=true&w=majority&appName=Byteandgo"
-
 try:
     client = pymongo.MongoClient(MONGO_URL, uuidRepresentation="standard")
     db = client["chat_with_doc"]
@@ -98,8 +99,10 @@ def get_response(
     )
 
     qa_chain = ConversationalRetrievalChain.from_llm(
-        llm, retriever=vectorstore.as_retriever()
-    )
+        llm, retriever=vectorstore.as_retriever(), condense_question_prompt=PromptTemplate.from_template(
+        "Answer the following question based on the document content. Be direct and precise. If the information is not in the document, clearly state that.\n\nQuestion: {question}"
+
+    ))
 
     # Get response with token tracking
     with get_openai_callback() as cb:
@@ -126,7 +129,7 @@ def load_memory_to_pass(session_id: str):
         data = data["conversation"]
         for x in range(0, len(data), 2):
             history.extend([(data[x], data[x + 1])])
-    print(history)
+    print("History: ", history)
     return history
 
 
@@ -255,4 +258,4 @@ async def uploadtos3(data_file: UploadFile):
 import uvicorn
 
 if __name__ == "__main__":
-    uvicorn.run(app)
+    uvicorn.run("backend:app", reload=True)
