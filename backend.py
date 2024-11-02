@@ -1,6 +1,5 @@
 from pydantic import BaseModel
 from langchain.prompts import PromptTemplate
-
 import pymongo
 import traceback
 import os, sys
@@ -18,19 +17,20 @@ import awswrangler as wr
 import boto3
 import uuid
 from typing import List
+from dotenv import load_dotenv
 
 if "OPENAI_API_BASE" in os.environ:
     del os.environ["OPENAI_API_BASE"]
 
 # Environment variables
-os.environ["OPENAI_API_KEY"] = "f4a11574f5224f0686965cdc68f0b778"
-S3_KEY = "AKIAW5BDRBTJEZ4XOLUL"
-S3_SECRET = "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"
-S3_BUCKET = "openaitestawsbucket"
-S3_REGION = "ap-southeast-2"
-S3_PATH = "coverletter/"
+os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+S3_KEY = os.getenv("S3_KEY")
+S3_SECRET = os.getenv("S3_SECRET")
+S3_BUCKET = os.getenv("S3_BUCKET")
+S3_REGION = os.getenv("S3_REGION")
+S3_PATH = os.getenv("S3_PATH")
+MONGO_URL = os.getenv("MONGO_URL")
 
-MONGO_URL = "mongodb+srv://owenwijaya22:connect@byteandgo.mpyeghk.mongodb.net/?retryWrites=true&w=majority&appName=Byteandgo"
 try:
     client = pymongo.MongoClient(MONGO_URL, uuidRepresentation="standard")
     db = client["chat_with_doc"]
@@ -61,8 +61,8 @@ def get_response(
     # Initialize Azure embeddings
     embeddings = AzureOpenAIEmbeddings(
         model="text-embedding-ada-002",
-        azure_endpoint="https://careerhackers-ai-2.openai.azure.com/",
-        api_key="f4a11574f5224f0686965cdc68f0b778",
+        azure_endpoint=os.getenv("AZURE_ENDPOINT"),
+        api_key=os.getenv("OPENAI_API_KEY"),
         openai_api_version="2023-07-01-preview",
     )
 
@@ -89,10 +89,10 @@ def get_response(
     vectorstore = FAISS.from_documents(all_splits, embeddings)
 
     llm = AzureChatOpenAI(
-        azure_endpoint="https://careerhackers-ai-2.openai.azure.com/",
+        azure_endpoint=os.getenv("AZURE_ENDPOINT"),
         openai_api_version="2023-03-15-preview",
         deployment_name="GPT4",
-        openai_api_key="f4a11574f5224f0686965cdc68f0b778",
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_api_type="azure",
         model_name=model,
         temperature=temperature,
