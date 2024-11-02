@@ -49,47 +49,16 @@ def chat(user_input, data, session_id=None):
         return response.json()["response"]["answer"], response.json()["session_id"]
 
 
-def upload_file(file_path):
-    """
-    Uploads a file to a specified API endpoint.
-
-    Args:
-        file_path (str): The path to the file to be uploaded.
-
-    Returns:
-        str: The file path returned by the API.
-    """
-    # Print file path for debugging
-    print("path", file_path)
-
-    # Extract the filename from the file path
-    filename = file_path.split("\\")[-1]
-
-    # API endpoint for file upload
-    url = BACKEND_URL+"/uploadFile"
-    print(url)
-
-    # Prepare payload for the file upload request
-    payload = {}
-    files = [
-        (
-            "data_file",
-            (filename, open(file_path, "rb"), "application/pdf"),
-        )
-    ]
-
-    # Set headers for the file upload request
+def upload_file(data_file):
+    url = BACKEND_URL + "/uploadFile"
+    files = {
+        "data_file": (data_file.name, data_file, data_file.type)
+    }
+    
     headers = {"accept": "application/json"}
+    response = requests.post(url, headers=headers, files=files)
 
-    # Make a POST request to upload the file
-    response = requests.request("POST", url, headers=headers, data=payload, files=files)
-    print(response.status_code)
-
-    # Check if the file upload was successful (status code 200)
     if response.status_code == 200:
-        # Print the API response for debugging
-        print(response.json())
-        # Return the file path returned by the API
         return response.json()["file_path"]
 
 
@@ -114,62 +83,34 @@ st.divider()
 
 # Process the uploaded file if available
 if data_file:
-    # Create temp directory if it doesn't exist
-    temp_dir = os.path.join(os.getcwd(), "temp")
-    os.makedirs(temp_dir, exist_ok=True)
-    # Save the file temporarily
-    temp_dir = os.path.join(os.getcwd(), "temp")
-    file_path = os.path.join(os.getcwd(),"temp", data_file.name)
-    with open(file_path, "wb") as f:
-        f.write(data_file.getbuffer())
-
-    # Upload the file to a specified API endpoint
-    s3_upload_url = upload_file(file_path=file_path)
-    
-    s3_upload_url=s3_upload_url.split("/")[-1
-                                           ]
+    # Directly upload the file to the specified API endpoint
+    s3_upload_url = upload_file(data_file)
 
     # Display chat messages from history on app rerun
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Accept user input
     if prompt := st.chat_input("You can ask any question"):
-        # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
-        # Display user message in chat message container
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Display assistant response in chat message container
         with st.chat_message("assistant"):
             if st.session_state.sessionid is None:
-                # If no existing session ID, start a new session
-                assistant_response, session_id = chat(
-                    prompt, data=s3_upload_url, session_id=None
-                )
+                assistant_response, session_id = chat(prompt, data=s3_upload_url)
                 st.session_state.sessionid = session_id
             else:
-                # If existing session ID, continue the session
-                assistant_response, session_id = chat(
-                    prompt, session_id=st.session_state.sessionid, data=s3_upload_url
-                )
+                assistant_response, session_id = chat(prompt, session_id=st.session_state.sessionid, data=s3_upload_url)
 
             message_placeholder = st.empty()
             full_response = ""
 
-            # Simulate stream of response with milliseconds delay
             for chunk in assistant_response.split():
                 full_response += chunk + " "
-                time.sleep(0.05)
-
-                # Add a blinking cursor to simulate typing
+                time.sleep(0.03)
                 message_placeholder.markdown(full_response + "▌")
 
             message_placeholder.markdown(full_response)
 
-        # Add assistant response to chat history
-        st.session_state.messages.append(
-            {"role": "assistant", "content": full_response}
-        )
+        st.session_state.messages.append({"role": "assistant", "content": full_response})

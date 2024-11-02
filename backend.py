@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader
+from langchain.docstore.document import Document as LangchainDocument
+import docx
 from langchain_community.callbacks.manager import get_openai_callback
 from langchain.chains import ConversationalRetrievalChain
 import gc
@@ -18,6 +19,10 @@ import boto3
 import uuid
 from typing import List
 from dotenv import load_dotenv
+from io import BytesIO
+from io import BytesIO
+import boto3
+from PyPDF2 import PdfReader
 
 if "OPENAI_API_BASE" in os.environ:
     del os.environ["OPENAI_API_BASE"]
@@ -67,22 +72,38 @@ def get_response(
         openai_api_version="2023-07-01-preview",
     )
 
-    wr.s3.download(
-        path=f"s3://openaitestawsbucket/coverletter/{file_name}",
-        local_file=file_name,
-        boto3_session=aws_s3,
-    )
-    print("file name is ", file_name)
+    print("Stream file name is ", file_name)
 
-    # Load document based on file type
+    # Load and process document based on file type
     if file_name.endswith(".pdf"):
-        loader = PyPDFLoader(file_name)
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id= S3_KEY,
+            aws_secret_access_key= S3_SECRET,
+            region_name=S3_REGION
+            )
+        pdf_file = s3.get_object(Bucket=S3_BUCKET, Key=f"{S3_PATH}{file_name}")["Body"].read()
+        pdf_reader = PdfReader(BytesIO(pdf_file))
+        text_content = ""
+        for page in pdf_reader.pages:
+            text_content += page.extract_text()
+        
     elif file_name.endswith(".docx"):
-        loader = Docx2txtLoader(file_name)
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id= S3_KEY,
+            aws_secret_access_key= S3_SECRET,
+            region_name=S3_REGION
+            )
+        docx_file = s3.get_object(Bucket=S3_BUCKET, Key=f"{S3_PATH}{file_name}")["Body"].read()
+        docx_reader = docx.Document(BytesIO(docx_file))
+        text_content = ""
+        for paragraph in docx_reader.paragraphs:
+            text_content += paragraph.text + "\n"
     else:
         raise ValueError("Unsupported file format. Please use PDF or DOCX files.")
 
-    data = loader.load()
+    data = [LangchainDocument(page_content=text_content)]
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000, chunk_overlap=100, separators=["\n", " ", ""]
     )
@@ -232,30 +253,27 @@ async def create_chat_message(chats: ChatMessageSent):
 
 
 @app.post("/uploadFile")
-async def upload_to_s3(data_file: UploadFile):
-    # Extract the filename
-    filename = data_file.filename.split("/")[-1]
-    
+async def uploadtos3(data_file: UploadFile):
+    print(data_file.filename.split("/")[-1])
     try:
-        # Read the content of the uploaded file
-        file_content = await data_file.read()
-
-        # Upload the file directly to S3
-        aws_s3.client('s3').put_object(
-            Bucket=S3_BUCKET,
-            Key=f"{S3_PATH}{filename}",
-            Body=file_content,
-            ContentType=data_file.content_type,  # Set the content type if needed
+        with open(f"{data_file.filename}", "wb") as out_file:
+            content = await data_file.read()
+            out_file.write(content)
+        wr.s3.upload(
+            local_file=data_file.filename,
+            path=f"s3://{S3_BUCKET}/{S3_PATH}{data_file.filename.split('/')[-1]}",
+            boto3_session=aws_s3,
         )
-        
-        # Construct response
-        s3_file_path = f"s3://{S3_BUCKET}/{S3_PATH}{filename}"
-        return JSONResponse(content={"filename": filename, "file_path": s3_file_path})
+        os.remove(data_file.filename)
+        response = {
+            "filename": data_file.filename.split("/")[-1],
+            "file_path": f"s3://{S3_BUCKET}/{S3_PATH}{data_file.filename.split('/')[-1]}",
+        }
 
-    except Exception as e:
-        # Capture any exceptions and return an error response
-        print(f"Error uploading file: {str(e)}")
-        raise HTTPException(status_code=500, detail="An error occurred while uploading the file.")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    return JSONResponse(content=response)
 
 
 import uvicorn
