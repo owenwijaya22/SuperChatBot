@@ -3,7 +3,7 @@ import json
 
 import os
 
-BACKEND_URL = os.getenv("BACKEND_URL")
+BACKEND_URL = os.getenv("BACKEND_URL") or "http://localhost:8000"
 
 def chat(user_input, data, session_id=None):
     """
