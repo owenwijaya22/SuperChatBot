@@ -1,24 +1,16 @@
-version: '3.9'
-
 services:
   backend:
+    image: superchatbot_backend
     build:
       context: ./backend
       dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
     env_file:
       - ./backend/.env
-    volumes:
-      - ./backend:/app
 
   frontend:
+    image: superchatbot_frontend
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports:
-      - "8501:8501"
-    environment:
-      - BACKEND_URL=http://backend:8000
     depends_on:
       - backend
