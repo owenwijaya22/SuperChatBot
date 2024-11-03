@@ -9,7 +9,6 @@ from io import BytesIO
 import boto3
 import docx
 import pymongo
-import awswrangler as wr
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from pydantic import BaseModel
