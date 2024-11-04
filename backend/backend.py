@@ -1,29 +1,28 @@
 import os
 import sys
-import gc
 import uuid
 import traceback
 from typing import List
-from io import BytesIO
 
 import boto3
 import docx
 import pymongo
-import awswrangler as wr
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, status, HTTPException, Request
 import time
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langchain.prompts import PromptTemplate
 from langchain.chains import ConversationalRetrievalChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
 from langchain.docstore.document import Document as LangchainDocument
 from langchain_community.callbacks.manager import get_openai_callback
+from langchain_mongodb.vectorstores import MongoDBAtlasVectorSearch
+from pymongo.operations import SearchIndexModel
+from io import BytesIO
+
 
 # from langchain.vectorstores.redis import Redis as RedisVectorStore
 
@@ -80,8 +79,9 @@ aws_s3 = boto3.Session(
 try:
     client = pymongo.MongoClient(MONGO_URL, uuidRepresentation="standard")
     db = client["chat_with_doc"]
-    conversationcol = db["chat-history"]
-    conversationcol.create_index([("session_id")], unique=True)
+    conversation_collection = db["chat-history"]
+    vector_collection = db["vector-store"]
+    conversation_collection.create_index([("session_id")], unique=True)
 except:
     print(traceback.format_exc())
     exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -93,96 +93,79 @@ except:
 class ChatMessageSent(BaseModel):
     session_id: str = None
     user_input: str
-    data_source: str
 
 
 # Helper functions
-def read_file_from_s3(file_name: str) -> str:
-    """Read and extract text content from S3 files"""
-    file_content = s3.get_object(Bucket=S3_BUCKET, Key=f"{S3_PATH}{file_name}")[
-        "Body"
-    ].read()
+# def read_file_from_s3(file_name: str) -> str:
+#     """Read and extract text content from S3 files"""
+#     file_content = s3.get_object(Bucket=S3_BUCKET, Key=f"{S3_PATH}{file_name}")[
+#         "Body"
+#     ].read()
 
-    if file_name.endswith(".pdf"):
-        pdf_reader = PdfReader(BytesIO(file_content))
-        return " ".join(page.extract_text() for page in pdf_reader.pages)
+#     if file_name.endswith(".pdf"):
+#         pdf_reader = PdfReader(BytesIO(file_content))
+#         return " ".join(page.extract_text() for page in pdf_reader.pages)
 
-    elif file_name.endswith(".docx"):
-        docx_reader = docx.Document(BytesIO(file_content))
-        return "\n".join(paragraph.text for paragraph in docx_reader.paragraphs)
+#     elif file_name.endswith(".docx"):
+#         docx_reader = docx.Document(BytesIO(file_content))
+#         return "\n".join(paragraph.text for paragraph in docx_reader.paragraphs)
 
-    raise ValueError("Unsupported file format. Please use PDF or DOCX files.")
+#     raise ValueError("Unsupported file format. Please use PDF or DOCX files.")
 
 
-def get_response(
-    file_name: str,
-    session_id: str,
-    query: str,
-    model: str = "text-embedding-ada-002",
-    temperature: float = 0,
-):
-    file_name = file_name.split("/")[-1]
-    text_content = read_file_from_s3(file_name)
-
-    data = [LangchainDocument(page_content=text_content)]
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, chunk_overlap=100, separators=["\n", " ", ""]
-    )
-    all_splits = text_splitter.split_documents(data)
-    vectorstore = FAISS.from_documents(all_splits, embeddings)
-
-    qa_chain = ConversationalRetrievalChain.from_llm(
-        llm,
-        retriever=vectorstore.as_retriever(),
-        condense_question_prompt=PromptTemplate.from_template(
-            "You are a professional document analyzer. Please answer the following question based on the document content. "
-            "Be direct and precise. If the information is not in the document, clearly state that. "
-            "Remember, you are Bob, the analyzer, not the user asking the question.\n\nQuestion: {question}"
-        ),
-    )
-
-    with get_openai_callback() as cb:
-        answer = qa_chain.invoke(
-            {
-                "question": query,
-                "chat_history": load_memory_to_pass(session_id=session_id),
-            }
+def ensure_search_index_exists(collection):
+    """Check if index exists and create if it doesn't"""
+    existing_indexes = collection.list_search_indexes()
+    
+    # Check if vector_index already exists
+    index_exists = any(index['name'] == 'vector_index' for index in existing_indexes)
+    
+    if not index_exists:
+        search_index_model = SearchIndexModel(
+            definition={
+                "fields": [
+                    {
+                        "type": "vector",
+                        "path": "embedding",
+                        "numDimensions": 1536,
+                        "similarity": "cosine",
+                    },
+                    {"type": "filter", "path": "page"},
+                ]
+            },
+            name="vector_index",
+            type="vectorSearch",
         )
-        answer["total_tokens_used"] = cb.total_tokens
+        collection.create_search_index(model=search_index_model)
+        
+def get_session() -> str:
+    return str(uuid.uuid4())
 
-    gc.collect()
-    return answer
+
+def add_session_history(session_id: str, new_values: List):
+    document = conversation_collection.find_one({"session_id": session_id})
+    if document:
+        conversation = document["conversation"]
+        conversation.extend(new_values)
+        conversation_collection.update_one(
+            {"session_id": session_id}, {"$set": {"conversation": conversation}}
+        )
+    else:
+        conversation_collection.insert_one(
+            {"session_id": session_id, "conversation": new_values}
+        )
 
 
 def load_memory_to_pass(session_id: str):
-    data = conversationcol.find_one({"session_id": session_id})
+    data = conversation_collection.find_one({"session_id": session_id})
     history = []
     if data:
         data = data["conversation"]
         for x in range(0, len(data), 2):
             history.extend([(data[x], data[x + 1])])
     return history
-
-
-def get_session() -> str:
-    return str(uuid.uuid4())
-
-
-def add_session_history(session_id: str, new_values: List):
-    document = conversationcol.find_one({"session_id": session_id})
-    if document:
-        conversation = document["conversation"]
-        conversation.extend(new_values)
-        conversationcol.update_one(
-            {"session_id": session_id}, {"$set": {"conversation": conversation}}
-        )
-    else:
-        conversationcol.insert_one(
-            {"session_id": session_id, "conversation": new_values}
-        )
-
-
 app = FastAPI()
+
 
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
@@ -195,6 +178,7 @@ async def add_process_time_header(request: Request, call_next):
     response.headers["X-Process-Time"] = str(process_time)
     return response
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -204,35 +188,77 @@ app.add_middleware(
 )
 
 
-# API endpoints
+@app.post("/uploadFile")
+async def uploadtos3(data_file: UploadFile):
+    
+    file_content = await data_file.read()
+    print('passed the file read')
+    file_id = str(uuid.uuid4())
+    
+    if data_file.filename.endswith(".pdf"):
+        pdf_reader = PdfReader(BytesIO(file_content))
+        text_content = " ".join(page.extract_text() for page in pdf_reader.pages)
+
+    elif data_file.filename.endswith(".docx"):
+        docx_reader = docx.Document(BytesIO(file_content))
+        text_content = "\n".join(paragraph.text for paragraph in docx_reader.paragraphs)
+    print('passed the file conversion')
+    # Create new vectors
+    data = [LangchainDocument(page_content=text_content, metadata={"file_id": file_id})]
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=100, separators=["\n", " ", ""]
+    )
+    all_splits = text_splitter.split_documents(data)
+    
+    print('passed the text splitting')
+    vector_store = MongoDBAtlasVectorSearch.from_documents(
+        documents=all_splits,
+        embedding=embeddings,
+        index_name = "vector_index",
+        collection=vector_collection,
+    )
+    print('c the vector store')
+    ensure_search_index_exists(vector_collection)
+    print('passed the search index')
+    if vector_store:
+        return {"file_path": file_id}
 @app.post("/chat")
 async def create_chat_message(chats: ChatMessageSent):
     try:
         session_id = chats.session_id or get_session()
-        payload = ChatMessageSent(
-            session_id=session_id,
-            user_input=chats.user_input,
-            data_source=chats.data_source,
-        ).model_dump()
-
-        response = get_response(
-            file_name=payload.get("data_source"),
-            session_id=payload.get("session_id"),
-            query=payload.get("user_input"),
+        query = chats.user_input
+        
+        vector_store = MongoDBAtlasVectorSearch(
+            collection=vector_collection,
+            embedding=embeddings,
+            index_name="vector_index"
         )
 
-        add_session_history(
-            session_id=session_id,
-            new_values=[payload.get("user_input"), response["answer"]],
+        retriever = vector_store.as_retriever(
+            search_type="similarity_score_threshold",
+            search_kwargs={"k": 5, "score_threshold": 0.05},
         )
-
-        return JSONResponse(
-            content={
-                "response": response,
-                "session_id": str(session_id),
-            }
+        
+        qa_chain = ConversationalRetrievalChain.from_llm(
+            llm,
+            retriever=retriever,
+            condense_question_prompt=PromptTemplate.from_template(
+                "Use the following pieces of context to answer the question about document at the end. "
+                "Be direct and precise. If the information is not in the document, clearly state that. "
+                "Chat History: {chat_history}\n"
+                "Question: {question}"
+            ),
+            return_source_documents=True,
+            verbose=True
         )
-
+        
+        with get_openai_callback() as cb:
+            answer = qa_chain.invoke(
+                {"question": query, "chat_history": load_memory_to_pass(session_id=session_id)}
+            )
+            token_usage = cb.total_tokens
+            answer["total_tokens_used"] = token_usage
+        return {"response": answer, "session_id": session_id}
     except Exception:
         print(traceback.format_exc())
         exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -240,30 +266,8 @@ async def create_chat_message(chats: ChatMessageSent):
         print(exc_type, fname, exc_tb.tb_lineno)
         raise HTTPException(status_code=status.HTTP_204_NO_CONTENT, detail="error")
 
-
-@app.post("/uploadFile")
-async def uploadtos3(data_file: UploadFile):
-    try:
-        content = await data_file.read()
-        
-        # Upload directly to S3 using boto3 client
-        s3.put_object(
-            Bucket=S3_BUCKET,
-            Key=f"{S3_PATH}{data_file.filename.split('/')[-1]}",
-            Body=content
-        )
-
-        response = {
-            "filename": data_file.filename.split("/")[-1],
-            "file_path": f"s3://{S3_BUCKET}/{S3_PATH}{data_file.filename.split('/')[-1]}",
-        }
-        return JSONResponse(content=response)
-
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-
 import uvicorn
+
 
 if __name__ == "__main__":
     uvicorn.run("backend:app", host="0.0.0.0", port=8000, reload=True)
