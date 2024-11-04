@@ -1,6 +1,5 @@
 import os
 import sys
-import gc
 import uuid
 import traceback
 from typing import List
@@ -149,7 +148,6 @@ def get_response(
         )
         answer["total_tokens_used"] = cb.total_tokens
 
-    gc.collect()
     return answer
 
 
