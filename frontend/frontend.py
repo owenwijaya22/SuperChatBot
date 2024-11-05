@@ -10,10 +10,10 @@ def chat(user_input, data, session_id=None):
     url = BACKEND_URL + "/chat"
 
     if session_id is None:
-        payload = json.dumps({"user_input": user_input, "data_source": data})
+        payload = json.dumps({"user_input": user_input})
     else:
         payload = json.dumps(
-            {"user_input": user_input, "data_source": data, "session_id": session_id}
+            {"user_input": user_input, "session_id": session_id}
         )
 
     headers = {

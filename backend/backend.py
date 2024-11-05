@@ -184,7 +184,7 @@ app.add_middleware(
 
 
 @app.post("/uploadFile")
-async def uploadtos3(data_file: UploadFile):
+async def uploadFile(data_file: UploadFile):
 
     file_content = await data_file.read()
     print("passed the file read")
