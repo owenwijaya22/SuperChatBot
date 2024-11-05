@@ -3,8 +3,6 @@ import sys
 import uuid
 import traceback
 from typing import List
-
-import boto3
 import docx
 import pymongo
 from dotenv import load_dotenv
@@ -22,12 +20,6 @@ from langchain_community.callbacks.manager import get_openai_callback
 from langchain_mongodb.vectorstores import MongoDBAtlasVectorSearch
 from pymongo.operations import SearchIndexModel
 from io import BytesIO
-
-
-# from langchain.vectorstores.redis import Redis as RedisVectorStore
-
-# redis_url = "redis://redis:6379"
-
 
 if "OPENAI_API_BASE" in os.environ:
     del os.environ["OPENAI_API_BASE"]
@@ -61,19 +53,19 @@ llm = AzureChatOpenAI(
 )
 
 # Initialize AWS S3 to read file
-s3 = boto3.client(
-    "s3",
-    aws_access_key_id=S3_KEY,
-    aws_secret_access_key=S3_SECRET,
-    region_name=S3_REGION,
-)
+# s3 = boto3.client(
+#     "s3",
+#     aws_access_key_id=S3_KEY,
+#     aws_secret_access_key=S3_SECRET,
+#     region_name=S3_REGION,
+# )
 
-# Initialize aws s3 session for uploading file
-aws_s3 = boto3.Session(
-    aws_access_key_id=S3_KEY,
-    aws_secret_access_key=S3_SECRET,
-    region_name=S3_REGION,
-)
+# # Initialize aws s3 session for uploading file
+# aws_s3 = boto3.Session(
+#     aws_access_key_id=S3_KEY,
+#     aws_secret_access_key=S3_SECRET,
+#     region_name=S3_REGION,
+# )
 
 # Initialize MongoDB
 try:
@@ -116,10 +108,10 @@ class ChatMessageSent(BaseModel):
 def ensure_search_index_exists(collection):
     """Check if index exists and create if it doesn't"""
     existing_indexes = collection.list_search_indexes()
-    
+
     # Check if vector_index already exists
-    index_exists = any(index['name'] == 'vector_index' for index in existing_indexes)
-    
+    index_exists = any(index["name"] == "vector_index" for index in existing_indexes)
+
     if not index_exists:
         search_index_model = SearchIndexModel(
             definition={
@@ -137,7 +129,8 @@ def ensure_search_index_exists(collection):
             type="vectorSearch",
         )
         collection.create_search_index(model=search_index_model)
-        
+
+
 def get_session() -> str:
     return str(uuid.uuid4())
 
@@ -164,6 +157,8 @@ def load_memory_to_pass(session_id: str):
         for x in range(0, len(data), 2):
             history.extend([(data[x], data[x + 1])])
     return history
+
+
 app = FastAPI()
 
 
@@ -190,11 +185,11 @@ app.add_middleware(
 
 @app.post("/uploadFile")
 async def uploadtos3(data_file: UploadFile):
-    
+
     file_content = await data_file.read()
-    print('passed the file read')
+    print("passed the file read")
     file_id = str(uuid.uuid4())
-    
+
     if data_file.filename.endswith(".pdf"):
         pdf_reader = PdfReader(BytesIO(file_content))
         text_content = " ".join(page.extract_text() for page in pdf_reader.pages)
@@ -202,43 +197,45 @@ async def uploadtos3(data_file: UploadFile):
     elif data_file.filename.endswith(".docx"):
         docx_reader = docx.Document(BytesIO(file_content))
         text_content = "\n".join(paragraph.text for paragraph in docx_reader.paragraphs)
-    print('passed the file conversion')
+    print("passed the file conversion")
     # Create new vectors
     data = [LangchainDocument(page_content=text_content, metadata={"file_id": file_id})]
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000, chunk_overlap=100, separators=["\n", " ", ""]
     )
     all_splits = text_splitter.split_documents(data)
-    
-    print('passed the text splitting')
+
+    print("passed the text splitting")
     vector_store = MongoDBAtlasVectorSearch.from_documents(
         documents=all_splits,
         embedding=embeddings,
-        index_name = "vector_index",
+        index_name="vector_index",
         collection=vector_collection,
     )
-    print('c the vector store')
+    print("c the vector store")
     ensure_search_index_exists(vector_collection)
-    print('passed the search index')
+    print("passed the search index")
     if vector_store:
         return {"file_path": file_id}
+
+
 @app.post("/chat")
 async def create_chat_message(chats: ChatMessageSent):
     try:
         session_id = chats.session_id or get_session()
         query = chats.user_input
-        
+
         vector_store = MongoDBAtlasVectorSearch(
             collection=vector_collection,
             embedding=embeddings,
-            index_name="vector_index"
+            index_name="vector_index",
         )
 
         retriever = vector_store.as_retriever(
             search_type="similarity_score_threshold",
             search_kwargs={"k": 5, "score_threshold": 0.05},
         )
-        
+
         qa_chain = ConversationalRetrievalChain.from_llm(
             llm,
             retriever=retriever,
@@ -249,12 +246,15 @@ async def create_chat_message(chats: ChatMessageSent):
                 "Question: {question}"
             ),
             return_source_documents=True,
-            verbose=True
+            verbose=True,
         )
-        
+
         with get_openai_callback() as cb:
             answer = qa_chain.invoke(
-                {"question": query, "chat_history": load_memory_to_pass(session_id=session_id)}
+                {
+                    "question": query,
+                    "chat_history": load_memory_to_pass(session_id=session_id),
+                }
             )
             token_usage = cb.total_tokens
             answer["total_tokens_used"] = token_usage
@@ -265,6 +265,7 @@ async def create_chat_message(chats: ChatMessageSent):
         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
         print(exc_type, fname, exc_tb.tb_lineno)
         raise HTTPException(status_code=status.HTTP_204_NO_CONTENT, detail="error")
+
 
 import uvicorn
 
